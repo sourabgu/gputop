@@ -15,6 +15,8 @@ endif
 
 bin_PROGRAMS = gputop gputop-system
 
+CC=/home/sourab/Downloads/gcc-installation/install/bin/gcc
+
 gputop_SOURCES = gputop-main.c
 
 #gputop_LDADD =
@@ -22,7 +24,8 @@ gputop_LDFLAGS = \
     $(GPUTOP_EXTRA_LDFLAGS) \
     -ldl
 gputop_CFLAGS = \
-    $(GPUTOP_EXTRA_CFLAGS)
+    $(GPUTOP_EXTRA_CFLAGS) \
+    -I"/home/sourab/source/dapc/rib-repo/install_gputop_webui/include/"
 gputop_CPPFLAGS = \
     -I$(top_srcdir) \
     -I$(srcdir) \
@@ -58,7 +61,8 @@ libgputop_la_CFLAGS = \
     -I$(top_srcdir)/libuv/include \
     -I$(top_srcdir)/h2o \
     -I$(top_srcdir)/h2o/include \
-    -DGPUTOP_WEB_ROOT=\"$(datadir)/web\"
+    -DGPUTOP_WEB_ROOT=\"$(datadir)/web\" \
+    -I"/home/sourab/source/dapc/rib-repo/install_gputop_webui/include/"
 libgputop_la_LIBADD = \
     $(GPUTOP_EXTRA_LDFLAGS) \
     $(NCURSES_DEP_LIBS) \
@@ -94,7 +98,7 @@ libgputop_la_SOURCES += \
 # gputop-gl.c is instead careful to lookup GLX symbols via
 # dlopen/dlsym so we don't need to be linked to the system GL library.
 #libgputop_la_LIBADD += $(GLX_DEP_LIBS)
-libgputop_la_LIBADD += -lX11
+libgputop_la_LIBADD += -lX11 -lz
 libgputop_la_CFLAGS += $(GLX_DEP_CFLAGS)
 
 wrapperdir = $(libdir)/wrappers
@@ -103,7 +107,8 @@ wrapper_LTLIBRARIES = libfakeGL.la #libEGL.la
 libfakeGL_la_SOURCES = \
     registry/glxapi.c
 libfakeGL_la_CFLAGS = \
-    $(GPUTOP_EXTRA_CFLAGS)
+    $(GPUTOP_EXTRA_CFLAGS) \
+    -I"/home/sourab/source/dapc/rib-repo/install_gputop_webui/include/"
 libfakeGL_la_LIBADD = libgputop.la
 libfakeGL_la_LDFLAGS = -shared -version-info 1
 endif
@@ -119,7 +124,8 @@ gputop_system_LDADD = \
     $(GPUTOP_EXTRA_LDFLAGS) \
     libgputop.la
 gputop_system_CFLAGS = \
-    $(GPUTOP_EXTRA_CFLAGS)
+    $(GPUTOP_EXTRA_CFLAGS) \
+    -I"/home/sourab/source/dapc/rib-repo/install_gputop_webui/include/"
 gputop_system_CPPFLAGS = \
     -I$(top_srcdir) \
     -I$(srcdir)
