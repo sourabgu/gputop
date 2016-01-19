@@ -719,6 +719,68 @@ handle_open_generic_query(h2o_websocket_conn_t *conn,
 }
 
 static void
+handle_open_i915_oa_command_stream_query(h2o_websocket_conn_t *conn,
+			  Gputop__Request *request)
+{
+    Gputop__OpenQuery *open_query = request->open_query;
+    uint32_t id = open_query->id;
+    Gputop__OACmdStreamQueryInfo *oa_cs_query_info = open_query->oa_cs_query;
+    struct gputop_perf_query *perf_query;
+    struct gputop_perf_stream *stream;
+    char *error = NULL;
+    int buffer_size;
+    Gputop__Message message = GPUTOP__MESSAGE__INIT;
+
+    if (!gputop_perf_initialize()) {
+	message.reply_uuid = request->uuid;
+	message.cmd_case = GPUTOP__MESSAGE__CMD_ERROR;
+	message.error = "Failed to initialize perf\n";
+	send_pb_message(conn, &message.base);
+	return;
+    }
+    dbg("handle_open_i915_oa_cs_query\n");
+
+    perf_query = &i915_perf_oa_queries[oa_cs_query_info->metric_set];
+
+    /* NB: Perf buffer size must be a power of two.
+     * We don't need a large buffer if we're periodically forwarding data */
+    if (open_query->live_updates)
+	buffer_size = 128 * 1024;
+    else
+	buffer_size = 16 * 1024 * 1024;
+
+    stream = gputop_perf_open_i915_oa_command_stream_query(perf_query,
+					    oa_cs_query_info->period_exponent,
+					    NULL,
+					    buffer_size,
+					    perf_ready_cb,
+					    open_query->overwrite,
+					    &error);
+    if (stream) {
+	stream->user.id = id;
+	stream->user.data = NULL;
+	stream->user.destroy_cb = stream_close_cb;
+	gputop_list_init(&stream->user.link);
+	gputop_list_insert(streams.prev, &stream->user.link);
+
+	if (open_query->live_updates)
+	    uv_timer_start(&timer, periodic_forward_cb, 200, 200);
+	else
+	    uv_timer_start(&timer, periodic_update_head_pointers, 200, 200);
+    } else {
+	dbg("Failed to open perf query set=%d period=%d: %s\n",
+	    oa_cs_query_info->metric_set, oa_cs_query_info->period_exponent,
+	    error);
+	free(error);
+    }
+
+    message.reply_uuid = request->uuid;
+    message.cmd_case = GPUTOP__MESSAGE__CMD_ACK;
+    message.ack = true;
+    send_pb_message(conn, &message.base);
+}
+
+static void
 handle_open_query(h2o_websocket_conn_t *conn, Gputop__Request *request)
 {
     Gputop__OpenQuery *open_query = request->open_query;
@@ -734,6 +796,9 @@ handle_open_query(h2o_websocket_conn_t *conn, Gputop__Request *request)
 	break;
     case GPUTOP__OPEN_QUERY__TYPE_GENERIC:
 	handle_open_generic_query(conn, request);
+	break;
+    case GPUTOP__OPEN_QUERY__TYPE_OA_CS_QUERY:
+	handle_open_i915_oa_command_stream_query(conn, request);
 	break;
     default:
 	message.reply_uuid = request->uuid;
@@ -927,6 +992,89 @@ handle_get_features(h2o_websocket_conn_t *conn,
     send_pb_message(conn, &message.base);
 }
 
+void
+gputop_pb_contexts_free(Gputop__Contexts *contexts)
+{
+    int i;
+
+    if (contexts->n_context) {
+	for (i = 0; i < contexts->n_context; i++) {
+	    Gputop__CtxInfo *entry = contexts->context[i];
+	    free(entry);
+	}
+
+	free(contexts->context);
+    }
+
+    free(contexts);
+}
+
+static void handle_get_contexts(h2o_websocket_conn_t *conn,
+		    Gputop__Request *request)
+{
+#define GPUTOP_MAX_CONTEXTS 32
+    Gputop__CtxInfo temp_ctxs[GPUTOP_MAX_CONTEXTS];
+    Gputop__Contexts *contexts =  NULL;
+    Gputop__Message message = GPUTOP__MESSAGE__INIT;
+
+    char proc_name[GPUTOP_MAX_CONTEXTS][16];
+    char proc_comm_path[20];
+    char *ctx_info, *ctx_info_backup, *one_ctx;
+    const char delim[2] = "\n";
+    int i, count = 0;
+
+    ctx_info = xmalloc(4096);
+    ctx_info_backup = ctx_info;
+
+    read_file("/sys/kernel/debug/dri/128/i915_context_status", ctx_info, 4096);
+    one_ctx = strtok(ctx_info, delim);
+
+    while((one_ctx != NULL) && (count < GPUTOP_MAX_CONTEXTS)) {
+	    int ctx_id, pid, ret;
+
+	    /* Extract reqd info */
+	    ret = sscanf(one_ctx, "%*s %*s %*s %d %d %*[^\n]", &ctx_id, &pid);
+
+	    if ((ret == 2) && (pid != -1)) {
+		    temp_ctxs[count].ctx_id = ctx_id;
+		    temp_ctxs[count].pid = pid;
+		    sprintf(proc_comm_path, "/proc/%d/comm", pid);
+		    read_file(proc_comm_path, proc_name[count], 16);
+		    temp_ctxs[count].proc_name = proc_name[count];
+
+	    	    fprintf(stderr, "ctx_id=%d, pid=%d, proc_name=%s\n",
+				ctx_id, pid, proc_name[count]);
+	    	    count++;
+	    }
+	    one_ctx = strtok(NULL, delim);
+    }
+
+    contexts = xmalloc(sizeof(Gputop__Contexts));
+    gputop__contexts__init(contexts);
+
+    contexts->context = xmalloc(count * sizeof(void *));
+    contexts->n_context = count;
+
+    for (i=0;i<count;i++) {
+	    Gputop__CtxInfo *ctx = xmalloc(sizeof(Gputop__CtxInfo));
+	    gputop__ctx_info__init(ctx);
+
+	    ctx->ctx_id = temp_ctxs[i].ctx_id;
+	    ctx->pid = temp_ctxs[i].pid;
+	    ctx->proc_name = temp_ctxs[i].proc_name;
+	    contexts->context[i] = ctx;
+    }
+
+    message.reply_uuid = request->uuid;
+    message.cmd_case = GPUTOP__MESSAGE__CMD_CONTEXTS;
+    message.contexts = contexts;
+
+    send_pb_message(conn, &message.base);
+
+    //gputop_pb_contexts_free(contexts);
+    //free(ctx_info_backup);
+}
+
 static void on_ws_message(h2o_websocket_conn_t *conn,
 			  const struct wslay_event_on_msg_recv_arg *arg)
 {
@@ -965,6 +1113,10 @@ static void on_ws_message(h2o_websocket_conn_t *conn,
 	case GPUTOP__REQUEST__REQ_CLOSE_QUERY:
 	    fprintf(stderr, "CloseQuery request received\n");
 	    handle_close_query(conn, request);
+	    break;
+	case GPUTOP__REQUEST__REQ_GET_CONTEXTS:
+	    fprintf(stderr, "GetContexts request received\n");
+	    handle_get_contexts(conn, request);
 	    break;
 	case GPUTOP__REQUEST__REQ__NOT_SET:
 	    assert(0);

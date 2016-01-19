@@ -22,6 +22,7 @@
 	    <ul>
 		<li><a href="#overview_tab">Overview</a></li>
 		<li><a href="#trace_tab">Live Tracing</a></li>
+		<li><a href="#cs_tab"> Command  Stream Overview</a></li>
 		<li><a href="#forensic_tab">Forensic Tracing</a></li>
 		<li><a href="#architecture_tab">Architecture View</a></li>
 		<li><a href="#log_tab">Log</a></li>
@@ -75,6 +76,23 @@
 		</div>
 		<div id="timelines" style="flex:1; display:flex; flex-direction:column;"></div>
 	    </div>
+
+	    <div id="cs_tab" style="display:flex; flex-direction: row;">
+
+		<div id="cs_part0" style="display:flex; flex-direction:column; flex: 1 0 auto;">
+		    <div class="info_name">Process List</div>
+		    <select name="process_select" id="process_select"></select>
+		    <div class="info_name">Context List</div>
+		    <select name="ctx_select" id="ctx_select"></select>
+		</div>
+
+		<div id="cs_part1" style="display:flex; flex-direction: column; flex: 1 0 auto;">
+		    <select name="cs_metrics_select" id="cs_metrics_select"></select>
+		    <div id="cs_bar_graph" style="flex: 1 0 auto;"></div>
+		</div>
+
+	    </div>
+
 	    <div id="forensic_tab" style="display:flex;">
 	    </div>
 	    <div id="architecture_tab" style="display:flex; flex-direction:column;">

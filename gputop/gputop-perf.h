@@ -313,6 +313,14 @@ gputop_open_i915_perf_oa_query(struct gputop_perf_query *query,
 			       bool overwrite,
 			       char **error);
 struct gputop_perf_stream *
+gputop_perf_open_i915_oa_command_stream_query(struct gputop_perf_query *query,
+			       int period_exponent,
+			       struct ctx_handle *ctx,
+			       size_t perf_buffer_size,
+			       void (*ready_cb)(uv_poll_t *poll, int status, int events),
+			       bool overwrite,
+			       char **error);
+struct gputop_perf_stream *
 gputop_perf_open_trace(int pid,
 		       int cpu,
 		       const char *system,

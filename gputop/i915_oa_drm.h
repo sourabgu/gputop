@@ -95,6 +95,17 @@ enum i915_oa_set {
 #define I915_PERF_FLAG_FD_NONBLOCK	(1<<1)
 #define I915_PERF_FLAG_DISABLED		(1<<2)
 
+#define I915_EXEC_RENDER                 (1<<0)
+
+enum drm_i915_perf_oa_event_source {
+	I915_PERF_OA_EVENT_SOURCE_UNDEFINED,
+	I915_PERF_OA_EVENT_SOURCE_PERIODIC,
+	I915_PERF_OA_EVENT_SOURCE_CONTEXT_SWITCH,
+	I915_PERF_OA_EVENT_SOURCE_RCS,
+
+	I915_PERF_OA_EVENT_SOURCE_MAX	/* non-ABI */
+};
+
 enum i915_perf_property_id {
 	/**
 	 * Open the stream for a specific context handle (as used with
@@ -128,6 +139,51 @@ enum i915_perf_property_id {
 	 *   80ns * 2^(period_exponent + 1)
 	 */
 	DRM_I915_PERF_OA_EXPONENT_PROP,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of sample
+	 * source field to be given to userspace. The sample source field
+	 * specifies the origin of OA report.
+	 */
+	DRM_I915_PERF_SAMPLE_OA_SOURCE_PROP,
+
+	/**
+	 * The value of this property specifies the GPU engine (ring) for which
+	 * the samples need to be collected. Specifying this property also
+	 * implies the command stream based sample collection.
+	 */
+	DRM_I915_PERF_RING_PROP,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of context ID
+	 * in the perf sample data.
+	 */
+	DRM_I915_PERF_SAMPLE_CTX_ID_PROP,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of pid in the
+	 * perf sample data.
+	 */
+	DRM_I915_PERF_SAMPLE_PID_PROP,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of tag in the
+	 * perf sample data.
+	 */
+	DRM_I915_PERF_SAMPLE_TAG_PROP,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of timestamp
+	 * in the perf sample data.
+	 */
+	DRM_I915_PERF_SAMPLE_TS_PROP,
+
+	/**
+	 * This property requests inclusion of mmio register values in the perf
+	 * sample data. The value of this property specifies the address of user
+	 * struct having the register addresses.
+	 */
+	DRM_I915_PERF_SAMPLE_MMIO_PROP,
 
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
@@ -176,7 +232,13 @@ enum i915_perf_record_type {
 	 * struct {
 	 *     struct drm_i915_perf_record_header header;
 	 *
-	 *     TODO: itemize extensible sample data here
+	 *     { u32 source_info; } && DRM_I915_PERF_SAMPLE_OA_SOURCE_PROP
+	 *     { u32 ctx_id; } && DRM_I915_PERF_SAMPLE_CTX_ID_PROP
+	 *     { u32 pid; } && DRM_I915_PERF_SAMPLE_PID_PROP
+	 *     { u32 tag; } && DRM_I915_PERF_SAMPLE_TAG_PROP
+	 *     { u64 timestamp; } && DRM_I915_PERF_SAMPLE_TS_PROP
+	 *     { u32 mmio[]; } && DRM_I915_PERF_SAMPLE_MMIO_PROP
+	 *     { u32 oa_report[]; } && DRM_I915_PERF_SAMPLE_OA_PROP
 	 * };
 	 */
 	DRM_I915_PERF_RECORD_SAMPLE = 1,

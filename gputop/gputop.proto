@@ -87,6 +87,18 @@ message BufferFillNotify
     required uint32 fill_percentage=2;
 }
 
+message CtxInfo
+{
+    required uint32 ctx_id = 1;
+    required uint32 pid = 2;
+    required string proc_name = 3;
+}
+
+message Contexts
+{
+    repeated CtxInfo context=1;
+}
+
 message Message
 {
     optional string reply_uuid = 1;
@@ -98,6 +110,7 @@ message Message
 	Log log = 5;
 	CloseNotify close_notify = 6;
 	BufferFillNotify fill_notify = 7;
+	Contexts contexts = 8;
     }
 }
 
@@ -127,6 +140,14 @@ message GenericEventInfo
     required uint64 config = 4; //E.g _COUNT_SW_CONTEXT_SWITCHES
 }
 
+message OACmdStreamQueryInfo
+{
+    required uint32 metric_set = 1;
+    //required uint32 format = 2;
+    required uint32 period_exponent = 3;
+    required uint32 ctx_id = 4;
+}
+
 message OpenQuery
 {
     required uint32 id = 1;
@@ -136,9 +157,10 @@ message OpenQuery
 	OAQueryInfo oa_query = 3;
 	TraceInfo trace = 4;
 	GenericEventInfo generic = 5;
+	OACmdStreamQueryInfo oa_cs_query = 6;
     }
-    required bool overwrite = 6;
-    required bool live_updates = 7;
+    required bool overwrite = 7;
+    required bool live_updates = 8;
 }
 
 message Request
@@ -149,5 +171,6 @@ message Request
 	bool get_features = 2;
 	OpenQuery open_query = 3;
 	uint32 close_query = 4;
+	bool get_contexts = 5;
     }
 }

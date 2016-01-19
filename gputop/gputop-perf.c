@@ -352,6 +352,79 @@ gputop_open_i915_perf_oa_query(struct gputop_perf_query *query,
 }
 
 struct gputop_perf_stream *
+gputop_perf_open_i915_oa_command_stream_query(struct gputop_perf_query *query,
+			       int period_exponent,
+			       struct ctx_handle *ctx,
+			       size_t perf_buffer_size,
+			       void (*ready_cb)(uv_poll_t *poll, int status, int events),
+			       bool overwrite,
+			       char **error)
+{
+    struct gputop_perf_stream *stream;
+    struct i915_perf_open_param param;
+    uint64_t properties[] = {
+	DRM_I915_PERF_SAMPLE_OA_PROP, true,
+
+	DRM_I915_PERF_OA_METRICS_SET_PROP, query->perf_oa_metrics_set,
+	DRM_I915_PERF_OA_FORMAT_PROP, query->perf_oa_format,
+	DRM_I915_PERF_OA_EXPONENT_PROP, period_exponent,
+
+	DRM_I915_PERF_RING_PROP, I915_EXEC_RENDER,
+	DRM_I915_PERF_SAMPLE_OA_SOURCE_PROP, true,
+	DRM_I915_PERF_SAMPLE_CTX_ID_PROP, true,
+	DRM_I915_PERF_SAMPLE_PID_PROP, true,
+	DRM_I915_PERF_SAMPLE_TAG_PROP, true,
+    };
+    int ret;
+
+    memset(&param, 0, sizeof(param));
+
+    param.flags = 0;
+    param.flags |= I915_PERF_FLAG_FD_CLOEXEC;
+    param.flags |= I915_PERF_FLAG_FD_NONBLOCK;
+
+    /* command streamer mode is for system wide metrics collection */
+    if (ctx)
+	    return NULL;
+    
+    param.properties = (uint64_t)properties;
+    param.n_properties = sizeof(properties) / 16 ;
+
+    ret = perf_ioctl(drm_fd, I915_IOCTL_PERF_OPEN, &param);
+
+    if (ret == -1) {
+	asprintf(error, "Error opening i915 perf OA event: %m\n");
+	return NULL;
+    }
+
+    stream = xmalloc0(sizeof(*stream));
+    stream->type = GPUTOP_STREAM_I915_PERF;
+    stream->ref_count = 1;
+    stream->query = query;
+
+    stream->fd = param.fd;
+
+    /* We double buffer the samples we read from the kernel so
+     * we can maintain a stream->last pointer for calculating
+     * counter deltas */
+    stream->oa.buf_sizes = MAX_I915_PERF_OA_SAMPLE_SIZE * 100;
+    stream->oa.bufs[0] = xmalloc0(stream->oa.buf_sizes);
+    stream->oa.bufs[1] = xmalloc0(stream->oa.buf_sizes);
+
+    stream->overwrite = overwrite;
+    if (overwrite) {
+#warning "TODO: support flight-recorder mode"
+	assert(0);
+    }
+
+    stream->fd_poll.data = stream;
+    uv_poll_init(gputop_ui_loop, &stream->fd_poll, stream->fd);
+    uv_poll_start(&stream->fd_poll, UV_READABLE, ready_cb);
+
+    return stream;
+}
+
+struct gputop_perf_stream *
 gputop_perf_open_trace(int pid,
 		       int cpu,
 		       const char *system,

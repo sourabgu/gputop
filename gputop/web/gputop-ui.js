@@ -30,6 +30,8 @@ var active_tab = $("#overview_tab");
 var all_oa_queries;
 var current_oa_query;
 
+var all_contexts;
+
 var rpc_id = 1;
 var next_query_id = 1;
 var query_handles = [];
@@ -500,6 +502,17 @@ function forensic_ui_activate()
 
 }
 
+function SortByPid(a, b)
+{
+    return ((a.pid < b.pid) ? -1 : ((a.pid > b.pid) ? 1: 0));
+}
+
+function gputop_ui_on_contexts_notify(f)
+{
+    all_contexts = f;
+    f.sort(SortByPid);
+}
+
 function gputop_ui_on_features_notify(f)
 {
     features = f;
@@ -543,6 +556,15 @@ function gputop_ui_on_oa_query_update(update)
     current_oa_query_update_handler(update);
 }
 
+function sleep(milliseconds) {
+  var start = new Date().getTime();
+  for (var i = 0; i < 1e7; i++) {
+    if ((new Date().getTime() - start) > milliseconds){
+      break;
+    }
+  }
+}
+
 var current_oa_query_id = 0;
 var overview_elements = [];
 
@@ -566,6 +588,9 @@ function overview_ui_handle_oa_query_update(update)
 	var val = value[0];
 	if (val !== 0)
 	    hbar.css("display", "flex");
+	else
+	    hbar.css("display", "none");
+
 	var maximum = value[1];
 	if (maximum) {
 	    var norm = (val / maximum);
@@ -651,6 +676,7 @@ function setup_overview_for_oa_query(idx)
 	var name = $(template).find(".bar-name");
 	name.html(counter.name);
 
+	template.css("display", "none");
 	overview_elements.push(template);
 	$("#overview_bar_graph").append(template);
     }
@@ -680,6 +706,7 @@ function overview_ui_activate()
 	    setup_overview_for_oa_query(selected);
 	    if (current_oa_query_id) {
 		close_query(current_oa_query_id, function() {
+		    //sleep(500);
 		    open_oa_query_for_overview(selected);
 		})
 	    }
@@ -691,7 +718,230 @@ function overview_ui_activate()
 	open_oa_query_for_overview(0);
     } else {
 	close_query(current_oa_query_id, function () {
-	    open_oa_query_for_overview(0);
+	//sleep(500);
+	open_oa_query_for_overview(0);
+	});
+    }
+}
+
+
+
+function handle_oa_cs_query_update(update)
+{
+    var oa_query = current_oa_query;
+    var i = 0;
+
+    //console.log("overview update");
+
+    for (var value of update.counters) {
+	var counter = oa_query.counters[i];
+	var hbar = overview_elements[i];
+
+	var canvas = $(hbar).find(".bar-canvas")[0];
+	var ctx = canvas.getContext("2d");
+
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+	var bar_width = 200;
+	var val = value[0];
+	if (val !== 0)
+	    hbar.css("display", "flex");
+	else
+	    hbar.css("display", "none");
+
+	var maximum = value[1];
+	if (maximum) {
+	    var norm = (val / maximum);
+	    if (norm > 1) {
+		norm = 1.1;
+		ctx.fillStyle = "#ffff00";
+	    } else if (norm > 0.9)
+		ctx.fillStyle = "#ff0000";
+	    else
+		ctx.fillStyle = "#00ff00";
+
+	    ctx.fillRect(0, 0, norm * 200, canvas.height);
+	} else {
+	    var norm = val;
+	    ctx.font = "30px Ariel";
+	    ctx.fillText("" + val, 0, 0);
+	}
+
+	/*
+	 * var ctx = canvas.getContext("2d");
+	 * ctx.fillRect(0, 0, norm, canvas.height);
+	 */
+
+	i++;
+    }
+}
+
+function open_oa_command_stream_query(idx_query, ctx_id)
+{
+    var oa_query = all_oa_queries[idx_query];
+
+    /* The timestamp for HSW+ increments every 80ns
+     *
+     * The period_exponent gives a sampling period as follows:
+     *   sample_period = 80ns * 2^(period_exponent + 1)
+     *
+     * The overflow period for Haswell can be calculated as:
+     *
+     * 2^32 / (n_eus * max_gen_freq * 2)
+     * (E.g. 40 EUs @ 1GHz = ~53ms)
+     *
+     * We currently sample ~ every 10 milliseconds...
+     */
+    var period_exponent = 16;
+
+    query_id = next_query_id++;
+    rpc({ "method": "open_oa_cs_query",
+	  "params": [ query_id,
+		      oa_query.metric_set,
+		      period_exponent,
+		      false, /* don't overwrite old samples */
+		      1000000000, /* nanoseconds of aggregation
+			     * i.e. request updates from the worker
+			     * as values that have been aggregated
+			     * over this duration */
+		      true, /* send live updates */
+		      parseInt(ctx_id)
+		    ] });
+    query_handles.push(query_id);
+    current_oa_query = oa_query;
+    current_oa_query_id = query_id;
+}
+
+function setup_oa_cs_query_overview(idx)
+{
+    var oa_query = all_oa_queries[idx];
+
+    $("#cs_bar_graph").empty();
+    overview_elements = [];
+
+	//$.plot($(graph), [ graph_data ], { series: { lines: { show: true, fill: true }, shadowSize: 0 },
+//					   xaxis: { min: x_min, max: x_max },
+//					   yaxis: { max: 100 }
+    var axis = $("<div/>", { style: "height:2em; width:200px;"});
+    var div = $("<div/>", { style: "display:flex; flex-direction:row;" } )
+		.append($("<div/>", { style: "width:20em; flex: 0 1 auto;" }))
+		    .append(axis);
+    $.plot($(axis), [], { yaxis: { show: false }, xaxis: { show: true, position: "top", min: 0, max: 100 }, grid: { borderWidth: 0 } });
+    $("#cs_bar_graph").append(div);
+
+    for (var counter of oa_query.counters) {
+	var template = $("#hbar-template").clone();
+
+	var name = $(template).find(".bar-name");
+	name.html(counter.name);
+
+	template.css("display", "none");
+	overview_elements.push(template);
+	$("#cs_bar_graph").append(template);
+    }
+}
+
+function populate_ctx_list(proc_name)
+{
+    var select_ctx = $("#ctx_select");
+    var j = 0;
+
+    select_ctx.empty();
+
+    for (var i in all_contexts) {
+	var q = all_contexts[i];
+
+	if (proc_name === q.proc_name) {
+	    var opt = document.createElement("option");
+	    opt.setAttribute("value", j);
+	    if (j === 0)
+	    opt.setAttribute("selected", "selected");
+	    opt.innerHTML = q.ctx_id;
+	    select_ctx.append($(opt));
+	    j++;
+	}
+    }
+}
+
+
+function command_stream_ui_activate()
+{
+    //close_queries();
+
+    current_oa_query_update_handler = handle_oa_cs_query_update;
+
+    var process_map = {};
+    var select_process = $("#process_select");
+    select_process.empty();
+
+
+    for (var i in all_contexts) {
+	var q = all_contexts[i];
+
+	if ((i === 0)|| !(q.proc_name in process_map)) {
+		process_map[q.proc_name] = q;
+	} else
+		continue;
+
+	var opt = document.createElement("option");
+	opt.setAttribute("value", i);
+	if (i === 0)
+	    opt.setAttribute("selected", "selected");
+	opt.innerHTML = q.proc_name;
+
+	select_process.append($(opt));
+    }
+
+    select_process.selectmenu({
+	change: function() {
+	    var selected = $("#process_select");
+	    var proc_name = this.options[this.selectedIndex].innerHTML;
+
+	    populate_ctx_list(proc_name);
+	}
+    });
+
+
+    var select_metrics = $("#cs_metrics_select");
+    select_metrics.empty();
+
+    for (var i in all_oa_queries) {
+	var q = all_oa_queries[i];
+	var opt = document.createElement("option");
+	opt.setAttribute("value", i);
+	if (i === 0)
+	    opt.setAttribute("selected", "selected");
+	opt.innerHTML = q.name;
+
+	select_metrics.append($(opt));
+    }
+
+    select_metrics.selectmenu({
+	change: function() {
+	    var metrics_id = $("#cs_metrics_select").val();
+    	    var ctx_obj = $("#ctx_select");
+	    var ctx_id = ctx_obj[0].childNodes[ctx_obj.val()].text;
+
+	    setup_oa_cs_query_overview(metrics_id);
+	    if (current_oa_query_id) {
+		close_query(current_oa_query_id, function() {
+		    sleep(500);
+		    open_oa_command_stream_query(metrics_id, ctx_id);
+		})
+	    }
+	}
+    });
+
+    /* Initial set up */
+    populate_ctx_list(all_contexts[0].proc_name);
+
+    setup_oa_cs_query_overview(0);
+    if (!current_oa_query_id) {
+	open_oa_command_stream_query(0, all_contexts[0].ctx_id);
+    } else {
+	close_query(current_oa_query_id, function () {
+	    sleep(500);
+	    open_oa_command_stream_query(0, all_contexts[0].ctx_id);
 	});
     }
 }
@@ -783,6 +1033,7 @@ ww.onmessage = function(e) {
 var tab_activators = {}
 tab_activators.overview_tab = overview_ui_activate;
 tab_activators.trace_tab = trace_ui_activate;
+tab_activators.cs_tab = command_stream_ui_activate;
 tab_activators.forensic_tab = forensic_ui_activate;
 tab_activators.architecture_tab = architecture_ui_activate;
 tab_activators.log_tab = activate_log_ui;

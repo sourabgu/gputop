@@ -53,6 +53,7 @@ struct gputop_perf_query i915_perf_oa_queries[I915_OA_METRICS_SET_MAX];
 
 struct gputop_worker_query {
     int id;
+    int ctx_id;
     uint64_t aggregation_period;
 
     struct oa_clock {
@@ -81,6 +82,15 @@ struct oa_sample {
    uint8_t oa_report[];
 };
 
+/* OA command stream samples read() from i915 perf */
+struct oa_cs_sample {
+   struct i915_perf_record_header header;
+   uint32_t source_info;
+   uint32_t ctx_id;
+   uint32_t pid;
+   uint32_t tag;
+   uint8_t oa_report[];
+};
 
 static struct gputop_devinfo devinfo;
 static int socket = 0;
@@ -341,10 +351,41 @@ handle_oa_query_i915_perf_data(struct gputop_worker_query *query, uint8_t *data,
             break;
 
 	case DRM_I915_PERF_RECORD_SAMPLE: {
-	    struct oa_sample *sample = (struct oa_sample *)header;
-	    uint8_t *report = sample->oa_report;
-	    uint32_t raw_timestamp = read_report_raw_timestamp((uint32_t *)report);
+	    uint8_t *report;
+	    uint32_t raw_timestamp;
 	    uint64_t timestamp;
+
+	    /*
+	     * Check if the command stream based samples are requested. In that
+	     * case, query->ctx_id field would not be 0. In this case, forward
+	     * only the samples having source info as SOURCE_RCS.
+	     * (The source_info field would already have been requested in the
+	     * properties while opening the stream). Filter out the samples
+	     * according to the requested ctx_id before forwarding.
+	     */
+	    if (query->ctx_id != 0) {
+		struct oa_cs_sample *sample = (struct oa_cs_sample *)header;
+
+		/* skip non-command stream samples */
+		if (sample->source_info != I915_PERF_OA_EVENT_SOURCE_RCS)
+		    continue;
+		else {
+	    		/*gputop_web_console_log(
+				"DAPC sample_size= %d, sample ctx id=%d, query ctx id=%d\n",
+				perf_sample->raw_size,
+				sample->ctx_id,
+				query->ctx_id);*/
+			/* skip the sample if ctx_id doesn't match */
+			if (sample->ctx_id != query->ctx_id)
+				continue;
+		}
+		report = sample->oa_report;
+	    } else {
+		struct oa_sample *sample = (struct oa_sample *)header;
+		report = sample->oa_report;
+	    }
+
+	    raw_timestamp = read_report_raw_timestamp((uint32_t *)report);
 
 	    if (raw_timestamp == 0) {
 #warning "check for zero report reason instead of checking timestamp"
@@ -604,6 +645,45 @@ update_features(Gputop__Features *features)
 }
 
 static void
+forward_contexts(Gputop__Contexts *contexts)
+{
+    gputop_string_t *str;
+    int i;
+
+    gputop_web_console_log("Forwarding contexts:\n");
+
+    str = gputop_string_new("{ \"method\": \"contexts_notify\", \"params\": [ [\n");
+
+    for (i = 0; i < contexts->n_context; i++) {
+	char *proc_name  = contexts->context[i]->proc_name;
+	int j;
+
+	/* XXX: hack to remove newlines which mess up the json format... */
+	for (j = 0; proc_name[j]; j++) {
+	    if (proc_name[j] == '\n')
+		proc_name[j] = ' ';
+	}
+    	gputop_web_console_log("ctx_id=%d, pid=%d, proc_name=%s\n",
+		contexts->context[i]->ctx_id,
+		contexts->context[i]->pid, proc_name);
+
+	    gputop_string_append_printf(str,
+	    "{ \"ctx_id\": \"%d\", \"pid\": \"%d\", \"proc_name\": \"%s\"} ",
+	    		contexts->context[i]->ctx_id, contexts->context[i]->pid,
+	    		proc_name);
+	    if (i < (contexts->n_context - 1))
+	    	gputop_string_append(str, ",\n");
+	    else
+	    	gputop_string_append(str, "\n");
+    }
+    gputop_string_append_printf(str, "  ]\n] }");
+
+    gputop_web_console_log("contexts JSON str:\n%s\n", str->str);
+    _gputop_web_worker_post(str->str);
+    gputop_string_free(str, true);
+}
+
+static void
 forward_log(Gputop__Log *log)
 {
     gputop_string_t *str = gputop_string_new("{ \"method\": \"log\", \"params\": [ [\n");
@@ -726,11 +806,32 @@ handle_protobuf_message(uint8_t *data, int len)
     case GPUTOP__MESSAGE__CMD_FILL_NOTIFY:
 	forward_fill_notify(message->fill_notify);
 	break;
+    case GPUTOP__MESSAGE__CMD_CONTEXTS:
+	forward_contexts(message->contexts);
+	break;
     case GPUTOP__MESSAGE__CMD__NOT_SET:
 	assert_not_reached();
     }
 
     free(message);
+}
+
+static void
+request_context_list(int socket)
+{
+    Gputop__Request req = GPUTOP__REQUEST__INIT;
+    char uuid_str[64];
+    uuid_t uuid;
+
+    uuid_generate(uuid);
+    uuid_unparse(uuid, uuid_str);
+
+    req.uuid = uuid_str;
+    req.req_case = GPUTOP__REQUEST__REQ_GET_CONTEXTS;
+    /* TODO: do we need a seperate field for get_contexts? */
+    req.get_features = true;
+
+    send_pb_message(socket, &req.base);
 }
 
 void EMSCRIPTEN_KEEPALIVE
@@ -893,6 +994,53 @@ gputop_webworker_on_open_generic(uint32_t id,
     gputop_list_insert(open_queries.prev, &query->link);
 }
 
+void EMSCRIPTEN_KEEPALIVE
+gputop_webworker_on_open_oa_cs_query(uint32_t id,
+				  int perf_metric_set,
+				  int period_exponent,
+				  unsigned overwrite,
+				  uint32_t aggregation_period,
+				  unsigned live_updates,
+				  unsigned ctx_id,
+				  const char *req_uuid)
+{
+    Gputop__Request req = GPUTOP__REQUEST__INIT;
+    Gputop__OpenQuery open = GPUTOP__OPEN_QUERY__INIT;
+    Gputop__OACmdStreamQueryInfo oa_cs_query_info = GPUTOP__OACMD_STREAM_QUERY_INFO__INIT;
+    struct gputop_worker_query *query = malloc(sizeof(*query));
+
+    memset(query, 0, sizeof(*query));
+
+    gputop_web_console_log("on_open_oa_cs_query set=%d, exponent=%d, overwrite=%d live=%s agg_period=%"PRIu32"\n",
+			   perf_metric_set, period_exponent, overwrite,
+			   live_updates ? "true" : "false",
+			   aggregation_period);
+
+    gputop_web_console_log("query ctx id=%d\n", ctx_id);
+
+    open.id = id;
+    open.type_case = GPUTOP__OPEN_QUERY__TYPE_OA_CS_QUERY;
+    open.oa_cs_query = &oa_cs_query_info;
+    open.live_updates = live_updates;
+    open.overwrite = overwrite;
+
+    oa_cs_query_info.metric_set = perf_metric_set;
+    oa_cs_query_info.period_exponent = period_exponent;
+
+    req.uuid = req_uuid;
+    req.req_case = GPUTOP__REQUEST__REQ_OPEN_QUERY;
+    req.open_query = &open;
+
+    send_pb_message(socket, &req.base);
+
+    memset(query, 0, sizeof(*query));
+    query->id = id;
+    query->ctx_id = ctx_id;
+    query->aggregation_period = aggregation_period;
+    query->oa_query = &i915_perf_oa_queries[perf_metric_set];
+    gputop_list_insert(open_queries.prev, &query->link);
+}
+
 /* Messages from the device... */
 static void
 gputop_websocket_onmessage(int socket, uint8_t *data, int len, void *user_data)
@@ -948,6 +1096,8 @@ gputop_websocket_onopen(int socket, void *user_data)
     req.get_features = true;
 
     send_pb_message(socket, &req.base);
+
+    request_context_list(socket);
 }
 
 void EMSCRIPTEN_KEEPALIVE
